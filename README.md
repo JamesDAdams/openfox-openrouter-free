@@ -1,31 +1,25 @@
 # openfox-openrouter-free
+OpenFox plugin for the OpenRouter provider focused on **free models only**, with an automatic hourly update system (1x per hour).
 
-Plugin OpenFox pour le fournisseur OpenRouter orienté **modèles gratuits uniquement**, avec système de mise à jour automatique horaire (1x par heure).
-
-## Fonctionnalités
-
-- **Provider OpenRouter (Free Models)** intégré à OpenFox.
-- **Filtre automatique** : Seuls les modèles OpenRouter gratuits (`pricing.prompt == "0"` et `pricing.completion == "0"`) sont récupérés.
-- **Mise à jour horaire (1x/heure)** :
-  - Ajout automatique des nouveaux modèles gratuits dès leur apparition.
-  - Suppression automatique des modèles retirés ou devenus payants.
-- **Authentification 1-Click OAuth / API Key** : Connexion rapide avec votre compte OpenRouter (ou via la variable `OPENROUTER_API_KEY`) pour la gestion des rate limits et requêtes.
-- **Support complet des fonctionnalités OpenFox** : Streaming, tool calls, thinking/reasoning.
+## Features
+- **OpenRouter (Free Models) Provider** integrated into OpenFox.
+- **Automatic filtering**: Only free OpenRouter models (`pricing.prompt == "0"` and `pricing.completion == "0"`) are retrieved.
+- **Hourly updates (1x/hour)**:
+  - Automatic addition of new free models as soon as they appear.
+  - Automatic removal of models that are discontinued or become paid.
+- **1-Click OAuth / API Key Authentication**: Quick connection with your OpenRouter account (or via the `OPENROUTER_API_KEY` variable) for managing rate limits and requests.
+- **Full support for OpenFox features**: Streaming, tool calls, thinking/reasoning.
 
 ## Installation
-
-Dans le répertoire des plugins d'OpenFox (`~/.openfox/plugins/` ou via le registre) :
-
+In OpenFox's plugins directory (`~/.openfox/plugins/` or via the registry):
 ```bash
 npm install openfox-openrouter-free
 ```
 
-## Utilisation
+## Usage
+1. Enable the **OpenRouter (Free Models)** provider in OpenFox.
+2. Click **Connect OpenRouter** to authenticate with your OpenRouter account in one click (or set the `OPENROUTER_API_KEY` environment variable).
+3. Enjoy OpenRouter's free models, updated every hour.
 
-1. Activez le provider **OpenRouter (Free Models)** dans OpenFox.
-2. Cliquez sur **Connect OpenRouter** pour vous authentifier avec votre compte OpenRouter en un clic (ou définissez la variable d'environnement `OPENROUTER_API_KEY`).
-3. Profitez des modèles gratuits d'OpenRouter mis à jour toutes les heures.
-
-## Licence
-
+## License
 MIT
