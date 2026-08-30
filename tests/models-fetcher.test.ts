@@ -1,15 +1,18 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { OpenCodeFreeModelManager, OpenCodeModelApiItem } from '../src/models-fetcher.js'
+import { OpenRouterFreeModelManager, OpenRouterModelApiItem } from '../src/models-fetcher.js'
 
-describe('OpenCodeFreeModelManager', () => {
-  let modelManager: OpenCodeFreeModelManager
+describe('OpenRouterFreeModelManager', () => {
+  let modelManager: OpenRouterFreeModelManager
   let mockFetcher: any
+  let mockNotify: any
 
   beforeEach(() => {
     mockFetcher = vi.fn()
-    modelManager = new OpenCodeFreeModelManager({
+    mockNotify = vi.fn()
+    modelManager = new OpenRouterFreeModelManager({
       fetcher: mockFetcher,
       refreshIntervalMs: 3600 * 1000,
+      notify: mockNotify,
     })
   })
 
@@ -25,112 +28,203 @@ describe('OpenCodeFreeModelManager', () => {
     }
   })
 
-  it('filters strictly for free models ending with "-free"', () => {
-    const freeItem: OpenCodeModelApiItem = {
-      id: 'deepseek-v4-flash-free',
-      name: 'DeepSeek V4 Flash Free',
+  it('filters strictly for free models (pricing 0/0 or :free/-free suffix)', () => {
+    const freePricingItem: OpenRouterModelApiItem = {
+      id: 'meta-llama/llama-3.3-70b-instruct',
+      name: 'Llama 3.3 70B',
+      pricing: { prompt: '0', completion: '0' },
     }
-    const paidItem: OpenCodeModelApiItem = {
-      id: 'claude-sonnet-5',
-      name: 'Claude Sonnet 5',
+    const freeSuffixItem: OpenRouterModelApiItem = {
+      id: 'meta-llama/llama-3.3-70b-instruct:free',
+      name: 'Llama 3.3 70B Free',
+    }
+    const paidItem: OpenRouterModelApiItem = {
+      id: 'openai/gpt-4o',
+      name: 'GPT-4o',
+      pricing: { prompt: '0.000005', completion: '0.000015' },
     }
 
-    expect(modelManager.isFreeModel(freeItem)).toBe(true)
+    expect(modelManager.isFreeModel(freePricingItem)).toBe(true)
+    expect(modelManager.isFreeModel(freeSuffixItem)).toBe(true)
     expect(modelManager.isFreeModel(paidItem)).toBe(false)
   })
 
-  it('refreshes free models list and enriches with models.dev contextWindow, supportsVision and reasoningEfforts', async () => {
-    const mockOpenCodeApiResponse = {
+  it('does not emit new model notification on initial startup background load, but notifies on subsequent new model discoveries', async () => {
+    const initialApiResponse = {
       data: [
         {
-          id: 'x-preview-f-free',
-          name: 'X Preview F (free)',
-        },
-        {
-          id: 'paid-model-paid',
-          name: 'Paid Model',
+          id: 'meta-llama/llama-3.3-70b-instruct:free',
+          name: 'Llama 3.3',
         },
       ],
     }
 
-    const mockModelsDevApiResponse = {
-      provider1: {
-        models: {
-          'x-preview-f-free': {
-            id: 'x-preview-f-free',
-            limit: { context: 1000000 },
-            modalities: { input: ['text', 'image', 'video'] },
-            reasoning: true,
-            reasoning_options: [
-              {
-                type: 'effort',
-                values: ['low', 'high', 'max'],
-              },
-            ],
-          },
+    mockFetcher.mockResolvedValueOnce({
+      ok: true,
+      json: async () => initialApiResponse,
+    })
+
+    // First fetch (e.g. at startup)
+    await modelManager.getFreeModels(true)
+    expect(mockNotify).not.toHaveBeenCalledWith(
+      expect.objectContaining({
+        title: 'New OpenRouter Free Models Available',
+      }),
+    )
+
+    // Second fetch: a new model appears
+    const secondApiResponse = {
+      data: [
+        {
+          id: 'meta-llama/llama-3.3-70b-instruct:free',
+          name: 'Llama 3.3',
         },
-      },
+        {
+          id: 'brand-new-org/super-model:free',
+          name: 'Super Model Free',
+          context_length: 200000,
+          architecture: { input_modalities: ['text', 'image'] },
+          supported_parameters: ['reasoning_effort'],
+        },
+      ],
     }
 
-    mockFetcher.mockImplementation(async (url: string) => {
-      if (url.includes('opencode.ai')) {
-        return { ok: true, json: async () => mockOpenCodeApiResponse }
-      }
-      if (url.includes('models.dev')) {
-        return { ok: true, json: async () => mockModelsDevApiResponse }
-      }
-      return { ok: false }
+    mockFetcher.mockResolvedValueOnce({
+      ok: true,
+      json: async () => secondApiResponse,
     })
 
     const models = await modelManager.getFreeModels(true)
-    expect(models.length).toBe(1)
-    expect(models[0].id).toBe('x-preview-f-free')
-    expect(models[0].selected).toBe(true)
-    expect(models[0].contextWindow).toBe(1000000)
-    expect(models[0].supportsVision).toBe(true)
-    expect(models[0].reasoningEfforts).toEqual(['low', 'high', 'max'])
+    expect(models.length).toBe(2)
+    expect(mockNotify).toHaveBeenCalledWith(
+      expect.objectContaining({
+        title: 'OpenRouter Free Models Updated',
+        body: expect.stringContaining('Super Model Free'),
+      }),
+    )
   })
 
-  it('updates cache dynamically by adding new free models and removing retired ones', async () => {
-    mockFetcher.mockImplementation(async (url: string) => {
-      if (url.includes('opencode.ai')) {
-        return {
-          ok: true,
-          json: async () => ({
-            data: [{ id: 'model1-free' }, { id: 'model2-free' }],
-          }),
-        }
-      }
-      return { ok: false }
+  it('emits only completion notification when notifyOnEveryCheck is enabled', async () => {
+    // Initial fetch to clear startup phase
+    mockFetcher.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        data: [{ id: 'meta-llama/llama-3.3-70b-instruct:free', name: 'Llama 3.3' }],
+      }),
+    })
+    await modelManager.getFreeModels(true)
+    mockNotify.mockClear()
+
+    modelManager.updateSettings({
+      notifyOnNewModelsOnly: false,
+      notifyOnEveryCheck: true,
+      checkOnStartup: true,
+      refreshIntervalMinutes: 60,
+    })
+
+    mockFetcher.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        data: [{ id: 'meta-llama/llama-3.3-70b-instruct:free', name: 'Llama 3.3' }],
+      }),
     })
 
     await modelManager.getFreeModels(true)
-    expect(modelManager.getCachedModels().map((m) => m.id)).toEqual(['model1-free', 'model2-free'])
-    expect(modelManager.getCachedModels().every((m) => m.selected === true)).toBe(true)
 
-    // Second fetch 1 hour later: model2-free retired, model3-free added
-    mockFetcher.mockImplementation(async (url: string) => {
-      if (url.includes('opencode.ai')) {
-        return {
-          ok: true,
-          json: async () => ({
-            data: [{ id: 'model1-free' }, { id: 'model3-free' }],
-          }),
-        }
-      }
-      return { ok: false }
-    })
-
-    await modelManager.getFreeModels(true)
-    expect(modelManager.getCachedModels().map((m) => m.id)).toEqual(['model1-free', 'model3-free'])
-    expect(modelManager.getCachedModels().every((m) => m.selected === true)).toBe(true)
+    // Should only have 1 call (completion) and NOT start spam
+    expect(mockNotify).toHaveBeenCalledTimes(1)
+    expect(mockNotify).toHaveBeenCalledWith(
+      expect.objectContaining({
+        title: 'OpenRouter Free Models Checked',
+        body: expect.stringContaining('Check complete: 1 free models available'),
+      }),
+    )
   })
 
-  it('periodic timer triggers periodic refresh', async () => {
+  it('respects checkOnStartup = false by skipping immediate fetch', () => {
+    mockFetcher.mockResolvedValue({
+      ok: true,
+      json: async () => ({ data: [] }),
+    })
+
+    modelManager.updateSettings({
+      notifyOnNewModelsOnly: true,
+      notifyOnEveryCheck: false,
+      checkOnStartup: false,
+      refreshIntervalMinutes: 60,
+    })
+
+    modelManager.startPeriodicRefresh(false)
+    expect(mockFetcher).not.toHaveBeenCalled()
+  })
+
+  it('notifies when a model is removed', async () => {
+    mockFetcher.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        data: [
+          { id: 'meta-llama/llama-3.3-70b-instruct:free', name: 'Llama 3.3' },
+          { id: 'mistralai/mistral-7b:free', name: 'Mistral 7B' },
+        ],
+      }),
+    })
+    await modelManager.getFreeModels(true)
+    mockNotify.mockClear()
+
+    // Second fetch: Mistral 7B removed
+    mockFetcher.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        data: [{ id: 'meta-llama/llama-3.3-70b-instruct:free', name: 'Llama 3.3' }],
+      }),
+    })
+    await modelManager.getFreeModels(true)
+
+    expect(mockNotify).toHaveBeenCalledWith(
+      expect.objectContaining({
+        title: 'OpenRouter Free Models Updated',
+        body: expect.stringContaining('Removed (1): Mistral 7B'),
+      }),
+    )
+  })
+
+  it('notifies on manual sync and includes list of new models if any', async () => {
+    mockFetcher.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        data: [
+          {
+            id: 'meta-llama/llama-3.3-70b-instruct:free',
+            name: 'Llama 3.3',
+          },
+          {
+            id: 'brand-new-org/shiny-model:free',
+            name: 'Shiny Model',
+          },
+        ],
+      }),
+    })
+
+    await modelManager.getFreeModels(true, true)
+
+    expect(mockNotify).toHaveBeenCalledWith(
+      expect.objectContaining({
+        title: 'OpenRouter Free Models Synchronized',
+        body: expect.stringContaining('Shiny Model'),
+      }),
+    )
+  })
+
+  it('periodic timer triggers periodic refresh and updates interval on setting change', async () => {
     vi.useFakeTimers()
-    const timerManager = new OpenCodeFreeModelManager({
+    const timerManager = new OpenRouterFreeModelManager({
       fetcher: mockFetcher,
-      refreshIntervalMs: 1000,
+      settings: {
+        notifyOnNewModelsOnly: true,
+        notifyOnEveryCheck: false,
+        checkOnStartup: true,
+        refreshIntervalMinutes: 10,
+      },
     })
 
     mockFetcher.mockResolvedValue({
@@ -138,11 +232,23 @@ describe('OpenCodeFreeModelManager', () => {
       json: async () => ({ data: [] }),
     })
 
-    timerManager.startPeriodicRefresh()
-    expect(mockFetcher).toHaveBeenCalled()
+    timerManager.startPeriodicRefresh(true)
+    expect(mockFetcher).toHaveBeenCalledTimes(1)
 
-    vi.advanceTimersByTime(1005)
-    expect(mockFetcher).toHaveBeenCalled()
+    // Advance by 10 minutes
+    vi.advanceTimersByTime(10 * 60 * 1000 + 5)
+    expect(mockFetcher).toHaveBeenCalledTimes(2)
+
+    // Update settings with 5 minutes
+    timerManager.updateSettings({
+      notifyOnNewModelsOnly: true,
+      notifyOnEveryCheck: false,
+      checkOnStartup: true,
+      refreshIntervalMinutes: 5,
+    })
+
+    vi.advanceTimersByTime(5 * 60 * 1000 + 5)
+    expect(mockFetcher).toHaveBeenCalledTimes(3)
 
     timerManager.stopPeriodicRefresh()
     vi.useRealTimers()
