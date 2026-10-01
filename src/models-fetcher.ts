@@ -1,5 +1,6 @@
 import type { ModelConfig } from 'openfox/provider'
 import { DEFAULT_SETTINGS, type OpenRouterPluginSettings } from './settings.js'
+import type { PluginNotificationRequest } from './types.js'
 
 export interface OpenRouterModelApiItem {
   id: string
@@ -19,71 +20,30 @@ export interface OpenRouterModelsApiResponse {
   data?: OpenRouterModelApiItem[]
 }
 
-export const DEFAULT_FREE_MODELS: ModelConfig[] = [
-  {
-    id: 'meta-llama/llama-3.3-70b-instruct:free',
-    name: 'Meta: Llama 3.3 70B Instruct (free)',
-    contextWindow: 128000,
-    source: 'backend',
-    supportsVision: false,
-    selected: true,
-  },
-  {
-    id: 'google/gemini-2.0-flash-lite-preview-02-05:free',
-    name: 'Google: Gemini Flash Lite 2.0 Experimental (free)',
-    contextWindow: 1048576,
-    source: 'backend',
-    supportsVision: true,
-    selected: true,
-  },
-  {
-    id: 'deepseek/deepseek-r1:free',
-    name: 'DeepSeek: R1 (free)',
-    contextWindow: 16384,
-    source: 'backend',
-    supportsVision: false,
-    selected: true,
-    reasoningEfforts: ['low', 'medium', 'high'],
-  },
-  {
-    id: 'qwen/qwen-2.5-coder-32b-instruct:free',
-    name: 'Qwen: Qwen 2.5 Coder 32B Instruct (free)',
-    contextWindow: 32768,
-    source: 'backend',
-    supportsVision: false,
-    selected: true,
-  },
-  {
-    id: 'mistralai/mistral-7b-instruct:free',
-    name: 'Mistral: Mistral 7B Instruct (free)',
-    contextWindow: 32768,
-    source: 'backend',
-    supportsVision: false,
-    selected: true,
-  },
-]
-
 export interface OpenRouterFreeModelManagerOptions {
   refreshIntervalMs?: number
   apiEndpoint?: string
   fetcher?: typeof fetch
-  notify?: (notification: { title: string; body: string }) => void
+  notify?: (notification: PluginNotificationRequest) => void
   settings?: OpenRouterPluginSettings
+  getDynamicSettings?: () => OpenRouterPluginSettings | undefined
 }
 
 export class OpenRouterFreeModelManager {
-  private cachedModels: ModelConfig[] = [...DEFAULT_FREE_MODELS]
-  private knownModelIds: Set<string> = new Set(DEFAULT_FREE_MODELS.map((m) => m.id))
+  private cachedModels: ModelConfig[] = []
+  private knownModelIds: Set<string> = new Set()
   private lastDiscoveredModels: string[] = []
   private lastRemovedModels: string[] = []
   private isInitialLoad = true
   private lastFetchTimestamp = 0
-  private timer: NodeJS.Timeout | null = null
+  private heartbeatTimer: NodeJS.Timeout | null = null
+  private isDestroyed = false
   private readonly customRefreshIntervalMs?: number
   private readonly apiEndpoint: string
   private readonly fetcher: typeof fetch
-  private notifier?: (notification: { title: string; body: string }) => void
+  private notifier?: (notification: PluginNotificationRequest) => void
   private settings: OpenRouterPluginSettings
+  private readonly dynamicSettingsGetter?: () => OpenRouterPluginSettings | undefined
 
   constructor(options?: OpenRouterFreeModelManagerOptions) {
     this.customRefreshIntervalMs = options?.refreshIntervalMs
@@ -91,6 +51,7 @@ export class OpenRouterFreeModelManager {
     this.fetcher = options?.fetcher ?? fetch
     this.notifier = options?.notify
     this.settings = options?.settings ?? { ...DEFAULT_SETTINGS }
+    this.dynamicSettingsGetter = options?.getDynamicSettings
   }
 
   getLastDiscoveredModels(): string[] {
@@ -105,47 +66,56 @@ export class OpenRouterFreeModelManager {
     if (this.customRefreshIntervalMs !== undefined) {
       return this.customRefreshIntervalMs
     }
-    const minutes = this.settings.refreshIntervalMinutes || DEFAULT_SETTINGS.refreshIntervalMinutes
-    return minutes * 60 * 1000
+    const current = this.getSettings()
+    const minutes = current.refreshIntervalMinutes || DEFAULT_SETTINGS.refreshIntervalMinutes
+    return Math.max(1, minutes) * 60 * 1000
   }
 
-  setNotifier(notify: (notification: { title: string; body: string }) => void): void {
+  setNotifier(notify: (notification: PluginNotificationRequest) => void): void {
     this.notifier = notify
   }
 
   updateSettings(settings: OpenRouterPluginSettings): void {
-    const previousInterval = this.getRefreshIntervalMs()
     this.settings = { ...settings }
-    const newInterval = this.getRefreshIntervalMs()
-
-    if (this.timer && previousInterval !== newInterval) {
-      this.stopPeriodicRefresh()
-      this.startPeriodicRefresh(false)
-    }
   }
 
   getSettings(): OpenRouterPluginSettings {
+    if (this.dynamicSettingsGetter) {
+      const dynamic = this.dynamicSettingsGetter()
+      if (dynamic) {
+        return dynamic
+      }
+    }
     return { ...this.settings }
   }
 
   /**
-   * Start periodic background refresh.
+   * Start periodic background refresh using a resilient heartbeat ticker.
    */
-  startPeriodicRefresh(checkOnStart = this.settings.checkOnStartup): void {
-    if (this.timer) return
+  startPeriodicRefresh(checkOnStart?: boolean): void {
+    if (this.isDestroyed) return
+    this.stopPeriodicRefresh()
 
-    if (checkOnStart) {
+    const settings = this.getSettings()
+    if (checkOnStart ?? settings.checkOnStartup) {
       this.refreshFreeModels(false, false).catch(() => {})
     }
 
-    this.timer = setInterval(() => {
-      this.refreshFreeModels(false, false).catch(() => {
-        // Ignore background refresh errors; stale cache will remain
-      })
-    }, this.getRefreshIntervalMs())
+    // Heartbeat ticker checks every 5 seconds if the refresh interval has elapsed
+    this.heartbeatTimer = setInterval(async () => {
+      if (this.isDestroyed) return
+      const intervalMs = this.getRefreshIntervalMs()
+      const now = Date.now()
+      if (now - this.lastFetchTimestamp >= intervalMs) {
+        this.lastFetchTimestamp = now
+        try {
+          await this.refreshFreeModels(false, false)
+        } catch {}
+      }
+    }, 5000)
 
-    if (this.timer.unref) {
-      this.timer.unref()
+    if (this.heartbeatTimer.unref) {
+      this.heartbeatTimer.unref()
     }
   }
 
@@ -153,22 +123,28 @@ export class OpenRouterFreeModelManager {
    * Stop periodic background refresh.
    */
   stopPeriodicRefresh(): void {
-    if (this.timer) {
-      clearInterval(this.timer)
-      this.timer = null
+    if (this.heartbeatTimer) {
+      clearInterval(this.heartbeatTimer)
+      this.heartbeatTimer = null
     }
   }
 
+  destroy(): void {
+    this.isDestroyed = true
+    this.stopPeriodicRefresh()
+  }
+
   /**
-   * Returns the list of free models, refreshing if cache is expired or empty.
+   * Returns the list of free models, refreshing from API if cache is empty or expired.
    */
   async getFreeModels(forceRefresh = false, isManual = false): Promise<ModelConfig[]> {
     const now = Date.now()
     if (
       forceRefresh ||
+      this.cachedModels.length === 0 ||
       now - this.lastFetchTimestamp >= this.getRefreshIntervalMs()
     ) {
-      if (forceRefresh) {
+      if (forceRefresh || this.cachedModels.length === 0) {
         await this.refreshFreeModels(forceRefresh, isManual)
       } else {
         this.refreshFreeModels(false, isManual).catch(() => {})
@@ -182,6 +158,7 @@ export class OpenRouterFreeModelManager {
    * adds new free models, removes retired ones, and sends in-app notifications according to settings.
    */
   async refreshFreeModels(_forceRefresh = false, isManual = false): Promise<ModelConfig[]> {
+    const settings = this.getSettings()
     try {
       const res = await this.fetcher(this.apiEndpoint, {
         headers: {
@@ -194,8 +171,15 @@ export class OpenRouterFreeModelManager {
       if (!res.ok) {
         if (isManual && this.notifier) {
           this.notifier({
-            title: 'OpenRouter Sync Failed',
-            body: `Failed to fetch models from OpenRouter (HTTP ${res.status}).`,
+            title: {
+              en: 'OpenRouter Sync Failed',
+              fr: 'Échec de synchronisation OpenRouter',
+            },
+            body: {
+              en: `Failed to fetch models from OpenRouter (HTTP ${res.status}).`,
+              fr: `Impossible de récupérer les modèles depuis OpenRouter (HTTP ${res.status}).`,
+            },
+            level: 'error',
           })
         }
         return this.cachedModels
@@ -250,7 +234,7 @@ export class OpenRouterFreeModelManager {
       const wasInitial = this.isInitialLoad
       this.lastDiscoveredModels = newlyDiscoveredModels
       this.lastRemovedModels = removedModels
-      if (freeModels.length > 0) {
+      if (freeModels.length > 0 || this.isInitialLoad) {
         this.cachedModels = freeModels
         this.knownModelIds = freeModelIds
       }
@@ -259,30 +243,63 @@ export class OpenRouterFreeModelManager {
 
       // Notifications logic
       if (this.notifier) {
-        const changes: string[] = []
+        const changesEn: string[] = []
+        const changesFr: string[] = []
+
         if (newlyDiscoveredModels.length > 0) {
-          changes.push(`Added (${newlyDiscoveredModels.length}): ${newlyDiscoveredModels.join(', ')}`)
+          changesEn.push(`Added (${newlyDiscoveredModels.length}): ${newlyDiscoveredModels.join(', ')}`)
+          changesFr.push(`Ajouté (${newlyDiscoveredModels.length}) : ${newlyDiscoveredModels.join(', ')}`)
         }
         if (removedModels.length > 0) {
-          changes.push(`Removed (${removedModels.length}): ${removedModels.join(', ')}`)
+          changesEn.push(`Removed (${removedModels.length}): ${removedModels.join(', ')}`)
+          changesFr.push(`Supprimé (${removedModels.length}) : ${removedModels.join(', ')}`)
         }
 
         if (isManual) {
           this.notifier({
-            title: 'OpenRouter Free Models Synchronized',
-            body: changes.length > 0
-              ? `Sync complete: ${freeModels.length} free models available (${changes.join(' | ')}).`
-              : `Sync complete: ${freeModels.length} free models are available (no changes).`,
+            title: {
+              en: 'OpenRouter Free Models Synchronized',
+              fr: 'Modèles gratuits OpenRouter synchronisés',
+            },
+            body: {
+              en:
+                changesEn.length > 0
+                  ? `Sync complete: ${freeModels.length} free models available (${changesEn.join(' | ')}).`
+                  : `Sync complete: ${freeModels.length} free models are available (no changes).`,
+              fr:
+                changesFr.length > 0
+                  ? `Synchronisation terminée : ${freeModels.length} modèles gratuits disponibles (${changesFr.join(' | ')}).`
+                  : `Synchronisation terminée : ${freeModels.length} modèles gratuits disponibles (aucun changement).`,
+            },
+            level: 'success',
           })
-        } else if (!wasInitial && changes.length > 0 && (this.settings.notifyOnNewModelsOnly || this.settings.notifyOnEveryCheck)) {
+        } else if (
+          !wasInitial &&
+          changesEn.length > 0 &&
+          (settings.notifyOnNewModelsOnly || settings.notifyOnEveryCheck)
+        ) {
           this.notifier({
-            title: 'OpenRouter Free Models Updated',
-            body: changes.join('\n'),
+            title: {
+              en: 'OpenRouter Free Models Updated',
+              fr: 'Modèles gratuits OpenRouter mis à jour',
+            },
+            body: {
+              en: changesEn.join('\n'),
+              fr: changesFr.join('\n'),
+            },
+            level: 'info',
           })
-        } else if (this.settings.notifyOnEveryCheck && (!wasInitial || changes.length === 0)) {
+        } else if (settings.notifyOnEveryCheck && (!wasInitial || changesEn.length === 0)) {
           this.notifier({
-            title: 'OpenRouter Free Models Checked',
-            body: `Check complete: ${freeModels.length} free models available (no changes).`,
+            title: {
+              en: 'OpenRouter Free Models Checked',
+              fr: 'Vérification des modèles gratuits OpenRouter terminée',
+            },
+            body: {
+              en: `Check complete: ${freeModels.length} free models available (no changes).`,
+              fr: `Vérification terminée : ${freeModels.length} modèles gratuits disponibles (aucun changement).`,
+            },
+            level: 'info',
           })
         }
       }
@@ -291,8 +308,15 @@ export class OpenRouterFreeModelManager {
     } catch (err) {
       if (isManual && this.notifier) {
         this.notifier({
-          title: 'OpenRouter Sync Error',
-          body: err instanceof Error ? err.message : 'Error syncing models from OpenRouter',
+          title: {
+            en: 'OpenRouter Sync Error',
+            fr: 'Erreur de synchronisation OpenRouter',
+          },
+          body: {
+            en: err instanceof Error ? err.message : 'Error syncing models from OpenRouter',
+            fr: err instanceof Error ? err.message : 'Erreur lors de la synchronisation des modèles OpenRouter',
+          },
+          level: 'error',
         })
       }
       return this.cachedModels

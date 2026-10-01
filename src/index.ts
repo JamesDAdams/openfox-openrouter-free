@@ -4,7 +4,8 @@ import { OpenRouterFreeModelManager } from './models-fetcher.js'
 import { OpenRouterCredentialStore } from './credentials.js'
 import { OpenRouterAuthAdapter } from './auth.js'
 import { OpenRouterFreeTransportAdapter } from './transport.js'
-import { PluginSettingsStore } from './settings.js'
+import { PluginSettingsStore, type OpenRouterPluginSettings } from './settings.js'
+import type { PluginNotificationRequest } from './types.js'
 import './types.js'
 
 export const openRouterFreePreset: ProviderPreset = {
@@ -26,6 +27,7 @@ export const openRouterFreePreset: ProviderPreset = {
 }
 
 export async function register(registry: ProviderPluginRegistry): Promise<void> {
+  const pluginCtx = (registry as any).context
   const storageDir = join(
     registry.runtime.configDirectory,
     'plugins',
@@ -40,13 +42,68 @@ export async function register(registry: ProviderPluginRegistry): Promise<void> 
     join(storageDir, 'credentials.json'),
   )
   const auth = new OpenRouterAuthAdapter(credentials)
+
+  const notify = (notification: PluginNotificationRequest) => {
+    try {
+      if (pluginCtx && typeof pluginCtx.notify === 'function') {
+        pluginCtx.notify(notification)
+      } else if (typeof (registry as any).notify === 'function') {
+        const titleStr = typeof notification.title === 'string' ? notification.title : notification.title.en
+        const bodyStr = typeof notification.body === 'string' ? notification.body : notification.body?.en ?? ''
+        ;(registry as any).notify({ title: titleStr, body: bodyStr })
+      }
+    } catch (err) {
+      console.error('Failed to notify from openfox-openrouter-free:', err)
+    }
+  }
+
+  const getDynamicSettings = (): OpenRouterPluginSettings | undefined => {
+    try {
+      if (pluginCtx && typeof pluginCtx.settings === 'function') {
+        const s = pluginCtx.settings()
+        if (s && typeof s === 'object') {
+          return {
+            notifyOnNewModelsOnly:
+              typeof s['notifyOnNewModelsOnly'] === 'boolean'
+                ? s['notifyOnNewModelsOnly']
+                : s['notifyOnNewModelsOnly'] === 'true'
+                  ? true
+                  : s['notifyOnNewModelsOnly'] === 'false'
+                    ? false
+                    : initialSettings.notifyOnNewModelsOnly,
+            notifyOnEveryCheck:
+              typeof s['notifyOnEveryCheck'] === 'boolean'
+                ? s['notifyOnEveryCheck']
+                : s['notifyOnEveryCheck'] === 'true'
+                  ? true
+                  : s['notifyOnEveryCheck'] === 'false'
+                    ? false
+                    : initialSettings.notifyOnEveryCheck,
+            checkOnStartup:
+              typeof s['checkOnStartup'] === 'boolean'
+                ? s['checkOnStartup']
+                : s['checkOnStartup'] === 'true'
+                  ? true
+                  : s['checkOnStartup'] === 'false'
+                    ? false
+                    : initialSettings.checkOnStartup,
+            refreshIntervalMinutes:
+              typeof s['refreshIntervalMinutes'] === 'number' && s['refreshIntervalMinutes'] > 0
+                ? s['refreshIntervalMinutes']
+                : !isNaN(Number(s['refreshIntervalMinutes'])) && Number(s['refreshIntervalMinutes']) > 0
+                  ? Number(s['refreshIntervalMinutes'])
+                  : initialSettings.refreshIntervalMinutes,
+          }
+        }
+      }
+    } catch {}
+    return undefined
+  }
+
   const modelManager = new OpenRouterFreeModelManager({
     settings: initialSettings,
-    notify: (notification) => {
-      if (typeof registry.notify === 'function') {
-        registry.notify(notification)
-      }
-    },
+    getDynamicSettings,
+    notify,
   })
   modelManager.startPeriodicRefresh(initialSettings.checkOnStartup)
 
@@ -56,45 +113,120 @@ export async function register(registry: ProviderPluginRegistry): Promise<void> 
   registry.registerTransport(transport)
   registry.registerPreset(openRouterFreePreset)
 
+  const triggerManualSync = async () => {
+    const models = await modelManager.getFreeModels(true, true)
+    const newModels = modelManager.getLastDiscoveredModels()
+    const removedModels = modelManager.getLastRemovedModels()
+    const changes: string[] = []
+    if (newModels.length > 0) changes.push(`${newModels.length} new: ${newModels.join(', ')}`)
+    if (removedModels.length > 0) changes.push(`${removedModels.length} removed: ${removedModels.join(', ')}`)
+    const message = changes.length > 0
+      ? `Sync complete: ${models.length} free models available (${changes.join(' | ')}).`
+      : `Sync complete: ${models.length} free models are available.`
+    return {
+      success: true,
+      modelsCount: models.length,
+      newModels,
+      removedModels,
+      message,
+    }
+  }
+
+  if (typeof (registry as any).registerRpc === 'function') {
+    ;(registry as any).registerRpc('openrouter.manualSync', async () => {
+      return await triggerManualSync()
+    })
+  }
+
+  if (typeof (registry as any).registerTool === 'function') {
+    ;(registry as any).registerTool({
+      name: 'sync_openrouter_free_models',
+      description: 'Force a sync and fetch the latest list of free models available on OpenRouter.',
+      parameters: {
+        type: 'object',
+        properties: {},
+      },
+      execute: async () => {
+        const result = await triggerManualSync()
+        return {
+          success: true,
+          output: JSON.stringify(result, null, 2),
+        }
+      },
+    })
+  }
+
   if (typeof registry.registerSettings === 'function') {
     registry.registerSettings({
-      title: 'OpenRouter Free Models Configuration',
-      description: 'Configure notification preferences and periodic synchronization for free OpenRouter models.',
+      title: {
+        en: 'OpenRouter Free Models Configuration',
+        fr: 'Configuration des modèles gratuits OpenRouter',
+      },
+      description: {
+        en: 'Configure notification preferences and periodic synchronization for free OpenRouter models.',
+        fr: 'Configurer les préférences de notification et la synchronisation périodique des modèles gratuits OpenRouter.',
+      },
       fields: [
         {
           key: 'checkOnStartup',
-          label: 'Check models on OpenFox startup',
+          label: {
+            en: 'Check models on OpenFox startup',
+            fr: 'Vérifier les modèles au démarrage d’OpenFox',
+          },
           type: 'boolean',
-          description: 'Automatically check OpenRouter for new free models when OpenFox starts.',
-          defaultValue: true,
+          description: {
+            en: 'Automatically check OpenRouter for new free models when OpenFox starts.',
+            fr: 'Vérifier automatiquement les nouveaux modèles gratuits au démarrage.',
+          },
+          default: true,
         },
         {
           key: 'refreshIntervalMinutes',
-          label: 'Check interval (minutes)',
+          label: {
+            en: 'Check interval (minutes)',
+            fr: 'Intervalle de vérification (minutes)',
+          },
           type: 'number',
-          description: 'How often to automatically check OpenRouter for new free models (in minutes).',
-          defaultValue: 60,
+          description: {
+            en: 'How often to automatically check OpenRouter for new free models (in minutes).',
+            fr: 'Fréquence de vérification automatique des modèles gratuits (en minutes).',
+          },
+          default: 60,
           required: true,
         },
         {
           key: 'notifyOnNewModelsOnly',
-          label: 'Notify only when new models are available or a models was removed',
+          label: {
+            en: 'Notify only when new models are available or a model was removed',
+            fr: 'Notifier uniquement lors de l’ajout ou du retrait de modèles',
+          },
           type: 'boolean',
-          description: 'Receive an in-app notification only when free models are added or removed on OpenRouter.',
-          defaultValue: true,
+          description: {
+            en: 'Receive an in-app notification only when free models are added or removed on OpenRouter.',
+            fr: 'Recevoir une notification uniquement lorsque des modèles gratuits sont ajoutés ou retirés.',
+          },
+          default: true,
         },
         {
           key: 'notifyOnEveryCheck',
-          label: 'Notify on every check',
+          label: {
+            en: 'Notify on every check',
+            fr: 'Notifier à chaque vérification',
+          },
           type: 'boolean',
-          description: 'Receive an in-app notification every time the background batch checks OpenRouter for models.',
-          defaultValue: false,
+          description: {
+            en: 'Receive an in-app notification every time the background batch checks OpenRouter for models.',
+            fr: 'Recevoir une notification à chaque vérification en arrière-plan.',
+          },
+          default: false,
         },
         {
           key: 'manualSync',
-          label: '',
+          label: { en: 'Sync Now', fr: 'Synchroniser' },
           type: 'button',
-          buttonLabel: 'Sync Now',
+          buttonLabel: { en: 'Sync Now', fr: 'Synchroniser' },
+          action: 'manualSync',
+          rpcMethod: 'openrouter.manualSync',
         },
       ],
       async getSettings() {
@@ -106,19 +238,7 @@ export async function register(registry: ProviderPluginRegistry): Promise<void> 
       },
       async executeAction(action: string) {
         if (action === 'manualSync') {
-          const models = await modelManager.getFreeModels(true, true)
-          const newModels = modelManager.getLastDiscoveredModels()
-          const removedModels = modelManager.getLastRemovedModels()
-          const changes: string[] = []
-          if (newModels.length > 0) changes.push(`${newModels.length} new: ${newModels.join(', ')}`)
-          if (removedModels.length > 0) changes.push(`${removedModels.length} removed: ${removedModels.join(', ')}`)
-
-          if (changes.length > 0) {
-            return {
-              message: `Sync complete: ${models.length} free models are available (${changes.join(' | ')}).`,
-            }
-          }
-          return { message: `Sync complete: ${models.length} free models are available.` }
+          return await triggerManualSync()
         }
       },
     })

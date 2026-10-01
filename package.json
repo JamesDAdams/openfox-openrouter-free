@@ -1,24 +1,35 @@
 {
   "name": "openfox-openrouter-free",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "description": "OpenRouter free models provider plugin for OpenFox",
-  "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
+  "type": "module",
+  "scripts": {
+    "build": "tsup",
+    "test": "vitest run --passWithNoTests",
+    "typecheck": "tsc --noEmit"
+  },
   "files": [
     "dist",
     "README.md",
     "LICENSE"
   ],
-  "scripts": {
-    "build": "tsup",
-    "typecheck": "tsc --noEmit",
-    "test": "vitest run"
-  },
   "openfox": {
-    "apiVersion": 1,
-    "hasSettings": true,
-    "plugin": "./dist/index.js"
+    "apiVersion": 2,
+    "entry": "./dist/index.js",
+    "displayName": "OpenRouter Free",
+    "description": "Access all free models on OpenRouter with automatic synchronization and live updates.",
+    "icon": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 64 64\" fill=\"none\"><path fill-rule=\"evenodd\" clip-rule=\"evenodd\" d=\"M32 6C17.64 6 6 17.64 6 32c0 14.36 11.64 26 26 26 7.6 0 14.44-3.26 19.2-8.48L38.4 36.72C36.48 37.52 34.32 38 32 38c-3.31 0-6-2.69-6-6s2.69-6 6-6 6 2.69 6 6c0 2.32-.48 4.48-1.28 6.4l12.8 12.8C54.74 46.44 58 39.6 58 32c0-14.36-11.64-26-26-26zm0 16c-5.52 0-10 4.48-10 10s4.48 10 10 10 10-4.48 10-10-4.48-10-10-10z\" fill=\"#6525FF\"/></svg>",
+    "capabilities": [
+      "presets",
+      "settings",
+      "tools",
+      "hooks",
+      "rpc",
+      "notifications"
+    ],
+    "timeoutMs": 15000
   },
   "peerDependencies": {
     "openfox": ">=2.0.56 <3"
@@ -30,5 +41,6 @@
     "typescript": "^5.7.3",
     "vitest": "^3.0.5"
   },
-  "license": "MIT"
+  "license": "MIT",
+  "author": "James Adams"
 }

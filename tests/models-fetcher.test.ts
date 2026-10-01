@@ -20,9 +20,15 @@ describe('OpenRouterFreeModelManager', () => {
     modelManager.stopPeriodicRefresh()
   })
 
-  it('has selected: true on all DEFAULT_FREE_MODELS', () => {
-    const cached = modelManager.getCachedModels()
-    expect(cached.length).toBeGreaterThan(0)
+  it('fetches models dynamically and has selected: true on discovered models', async () => {
+    mockFetcher.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        data: [{ id: 'meta-llama/llama-3.3-70b-instruct:free', name: 'Llama 3.3 Free' }],
+      }),
+    })
+    const cached = await modelManager.getFreeModels(true)
+    expect(cached.length).toBe(1)
     for (const model of cached) {
       expect(model.selected).toBe(true)
     }
@@ -98,8 +104,8 @@ describe('OpenRouterFreeModelManager', () => {
     expect(models.length).toBe(2)
     expect(mockNotify).toHaveBeenCalledWith(
       expect.objectContaining({
-        title: 'OpenRouter Free Models Updated',
-        body: expect.stringContaining('Super Model Free'),
+        title: expect.objectContaining({ en: 'OpenRouter Free Models Updated' }),
+        body: expect.objectContaining({ en: expect.stringContaining('Super Model Free') }),
       }),
     )
   })
@@ -135,8 +141,8 @@ describe('OpenRouterFreeModelManager', () => {
     expect(mockNotify).toHaveBeenCalledTimes(1)
     expect(mockNotify).toHaveBeenCalledWith(
       expect.objectContaining({
-        title: 'OpenRouter Free Models Checked',
-        body: expect.stringContaining('Check complete: 1 free models available'),
+        title: expect.objectContaining({ en: 'OpenRouter Free Models Checked' }),
+        body: expect.objectContaining({ en: expect.stringContaining('Check complete: 1 free models available') }),
       }),
     )
   })
@@ -182,8 +188,8 @@ describe('OpenRouterFreeModelManager', () => {
 
     expect(mockNotify).toHaveBeenCalledWith(
       expect.objectContaining({
-        title: 'OpenRouter Free Models Updated',
-        body: expect.stringContaining('Removed (1): Mistral 7B'),
+        title: expect.objectContaining({ en: 'OpenRouter Free Models Updated' }),
+        body: expect.objectContaining({ en: expect.stringContaining('Removed (1): Mistral 7B') }),
       }),
     )
   })
@@ -209,8 +215,8 @@ describe('OpenRouterFreeModelManager', () => {
 
     expect(mockNotify).toHaveBeenCalledWith(
       expect.objectContaining({
-        title: 'OpenRouter Free Models Synchronized',
-        body: expect.stringContaining('Shiny Model'),
+        title: expect.objectContaining({ en: 'OpenRouter Free Models Synchronized' }),
+        body: expect.objectContaining({ en: expect.stringContaining('Shiny Model') }),
       }),
     )
   })
